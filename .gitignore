@@ -24,3 +24,6 @@ audition-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# Ignore Mac OS DS files
+.DS_Store
