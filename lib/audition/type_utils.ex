@@ -56,8 +56,7 @@ defmodule Audition.TypeUtils do
   def remove_id3(
         <<
           "ID3",
-          _major_version::8,
-          _revision::8,
+          _major_version_revision::16,
           unsyncronisation_flag::1,
           extended_header_flag::1,
           experimental_indicator_flag::1,
@@ -67,13 +66,18 @@ defmodule Audition.TypeUtils do
           rest::binary
         >> = bin_content
       ) do
-    decoded_size =
-      unsynchsafe_size
-      |> decode_unsynchsafe_unsigned()
+    # Number of bytes, not bits
+    int_decoded_size =
+      if unsyncronisation_flag == 1 do
+        unsynchsafe_size
+        |> decode_unsynchsafe_unsigned()
+      else
+        :binary.decode_unsigned(unsynchsafe_size)
+      end
 
     if unsyncronisation_flag == 1, do: IO.puts("Unsyncronisation flag is set")
 
-    decoded_xhsize =
+    int_decoded_xhsize =
       if extended_header_flag == 1 do
         # Extended Header: size, number of flag bytes and extended flags
         <<
@@ -91,18 +95,18 @@ defmodule Audition.TypeUtils do
 
     if experimental_indicator_flag == 1, do: IO.puts("Experimental Indicator flag is set")
 
-    _remove_bytes =
+    # Precense of the footer indicate 10 or 20 bits at the end.
+    plus_bytes =
       if footer_present == 1 do
-        IO.puts("Footer present flag is set")
         20
       else
         10
       end
 
     # Tag
-    id3tag_size = decoded_size + decoded_xhsize + 10
+    id3tag_size = int_decoded_size + int_decoded_xhsize + plus_bytes
 
-    <<_id3_tag::size(id3tag_size), mp3_content::bitstring>> = bin_content
+    <<_id3_tag::size(id3tag_size * 8), mp3_content::bitstring>> = bin_content
 
     mp3_content
   end
