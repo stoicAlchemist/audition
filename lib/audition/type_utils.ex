@@ -60,7 +60,7 @@ defmodule Audition.TypeUtils do
           unsyncronisation_flag::1,
           extended_header_flag::1,
           experimental_indicator_flag::1,
-          footer_present::1,
+          _footer_present::1,
           _flags_padding::4,
           unsynchsafe_size::binary-size(4),
           rest::binary
@@ -68,12 +68,9 @@ defmodule Audition.TypeUtils do
       ) do
     # Number of bytes, not bits
     int_decoded_size =
-      if unsyncronisation_flag == 1 do
-        unsynchsafe_size
-        |> decode_unsynchsafe_unsigned()
-      else
-        :binary.decode_unsigned(unsynchsafe_size)
-      end
+      unsynchsafe_size
+      |> :binary.decode_unsigned()
+      |> decode_synchsafe_unsigned()
 
     if unsyncronisation_flag == 1, do: IO.puts("Unsyncronisation flag is set")
 
@@ -88,48 +85,92 @@ defmodule Audition.TypeUtils do
         >> = rest
 
         synchsafe_xhsize
-        |> decode_unsynchsafe_unsigned()
+        |> decode_synchsafe_unsigned()
       else
         0
       end
 
     if experimental_indicator_flag == 1, do: IO.puts("Experimental Indicator flag is set")
 
-    # Precense of the footer indicate 10 or 20 bits at the end.
-    plus_bytes =
-      if footer_present == 1 do
-        20
-      else
-        10
-      end
-
-    # Tag
-    id3tag_size = int_decoded_size + int_decoded_xhsize + plus_bytes
+    # Tag, 10bytes for ID3 header
+    id3tag_size = int_decoded_size + int_decoded_xhsize + 10
 
     <<_id3_tag::size(id3tag_size * 8), mp3_content::bitstring>> = bin_content
 
     mp3_content
   end
 
-  @doc """
-  Decode unsynchsafe encoded integer.
+  # If the binary doesn't have a tag, just return it
+  def remove_id3(<<255, _rest::binary>> = audio), do: audio
 
-  Return `Integer`
+  @doc """
+  Encode an integer to a synchsafe encoded integer. A basic example would be the number 255, the binary
+  representation is <<0b11111111>>. Encoding it to synchsafe would mean that only 7 bits are
+  usable, the 8th should always be a zero so the encoded binary would be
+  <<0b00000001, 0b01111111>> which  is the correct representation of the number 383.
+
+  Return `Binary`
 
   ## Examples
 
-      iex> Audition.TypeUtils.decode_unsynchsafe_unsigned(binary_variable)
-      53
+    iex> Audition.TypeUtils.encode_unsynchsafe_unsigned(255)
+    383
   """
-  def decode_unsynchsafe_unsigned(<<b>>), do: b
-
-  def decode_unsynchsafe_unsigned(encoded_binary) do
-    encoded_binary
+  @spec encode_unsynchsafe_unsigned(integer()) :: integer()
+  def encode_unsynchsafe_unsigned(int32) when is_integer(int32) do
+    int32
+    |> :binary.encode_unsigned()
     |> :binary.bin_to_list()
     |> Enum.reverse()
     |> Enum.with_index()
     |> Enum.reduce(0, fn {el, index}, acc ->
-      acc ||| el <<< (index * 7)
+      el <<< (index * 8 + index + 1)
+      |> :binary.encode_unsigned()
+      |> :binary.bin_to_list()
+      |> Enum.with_index()
+      |> unshift_needed(index + 1)
+      |> :binary.list_to_bin()
+      |> :binary.decode_unsigned()
+      |> Bitwise.|||(acc)
     end)
+  end
+
+  @doc """
+  Decode a synchsafe encoded integer.
+
+  ## Examples
+
+    iex> Audition.TypeUtils.decode_synchsafe_unsigned(383)
+    255
+  """
+  @spec decode_synchsafe_unsigned(integer()) :: integer()
+  def decode_synchsafe_unsigned(synchsafe_int32) when is_integer(synchsafe_int32) do
+    synchsafe_int32
+    |> :binary.encode_unsigned()
+    |> :binary.bin_to_list()
+    |> Enum.reverse()
+    |> Enum.with_index()
+    |> Enum.reduce(0, fn {el, idx}, acc ->
+      acc ||| (el <<< (7 * idx))
+    end)
+  end
+
+  @spec unshift_needed(list(tuple()), integer()) :: list(integer())
+  defp unshift_needed(list_num, old_size) do
+    # When a new byte was added result of the left bit shifting
+    # you don't need to unshift that
+
+    if length(list_num) > old_size do
+      list_num
+      |> Enum.map(fn
+        {new_shifted, 0} -> new_shifted
+        {to_shift, _} -> to_shift >>> 1
+      end)
+    else
+      list_num
+      |> Enum.map(fn
+        {to_shift, _} -> to_shift >>> 1
+      end)
+    end
   end
 end
